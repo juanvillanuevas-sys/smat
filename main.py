@@ -54,4 +54,4 @@ def obtener_estaciones(db:Session = Depends(get_db)):
 
 @app.get("/estaciones/{id}/historial")
 def obtener_estaciones(id:int, db: Session=Depends(get_db)):
-    return db.query(models.LecturaDB)
+    return db.query(models.LecturaDB).filter(models.LecturaDB.estacion_id == id).all()
