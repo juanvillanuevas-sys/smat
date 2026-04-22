@@ -1,8 +1,13 @@
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from . import models, schemas, crud  # EL PUNTO ES CLAVE AQUÍ
+from .database import SessionLocal, engine  # AQUÍ TAMBIÉN
+# Importaciones de tus archivos extraídos
 import models
-from app.database import engine, get_db
+import schemas
+import crud
+from database import engine, get_db
 
 # ==========================================================
 # CREACIÓN DE LA BASE DE DATOS Y TABLAS
@@ -33,18 +38,15 @@ app = FastAPI(
     },
 )
 
-# ==========================================================
-# ESQUEMAS (PYDANTIC)
-# ==========================================================
-class EstacionCreate(BaseModel):
-    id: int
-    nombre: str
-    ubicacion: str
-
-class LecturaCreate(BaseModel):
-    estacion_id: int
-    valor: float
-
+# Configuración de orígenes permitidos
+origins = ["*"] 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ==========================================================
 # ENDPOINTS
@@ -57,15 +59,14 @@ class LecturaCreate(BaseModel):
     summary="Registrar una nueva estación de monitoreo",
     description="Inserta una estación física (ej. río, volcán, zona sísmica) en la base de datos."
 )
-def crear_estacion(estacion: EstacionCreate, db: Session = Depends(get_db)):
-    nueva_estacion = models.EstacionDB(
-        id=estacion.id,
-        nombre=estacion.nombre,
+def crear_estacion(estacion: schemas.EstacionCreate, db: Session = Depends(get_db)):
+    # Lógica delegada a crud.py
+    nueva_estacion = crud.crear_estacion(
+        db, 
+        id=estacion.id, 
+        nombre=estacion.nombre, 
         ubicacion=estacion.ubicacion
     )
-    db.add(nueva_estacion)
-    db.commit()
-    db.refresh(nueva_estacion)
     return {"msj": "Estación guardada en DB", "data": nueva_estacion}
 
 
@@ -76,22 +77,17 @@ def crear_estacion(estacion: EstacionCreate, db: Session = Depends(get_db)):
     summary="Recibir datos de telemetría",
     description="Recibe el valor capturado por un sensor y lo vincula a una estación existente."
 )
-def registrar_lectura(lectura: LecturaCreate, db: Session = Depends(get_db)):
-    estacion = db.query(models.EstacionDB).filter(
-        models.EstacionDB.id == lectura.estacion_id
-    ).first()
+def registrar_lectura(lectura: schemas.LecturaCreate, db: Session = Depends(get_db)):
+    # Validación de existencia usando crud.py
+    estacion = crud.obtener_estacion_por_id(db, lectura.estacion_id)
 
     if not estacion:
         raise HTTPException(status_code=404, detail="Estación no existe")
 
-    nueva_lectura = models.LecturaDB(
-        valor=lectura.valor,
-        estacion_id=lectura.estacion_id
-    )
-    db.add(nueva_lectura)
-    db.commit()
+    # Persistencia usando crud.py
+    crud.registrar_lectura(db, valor=lectura.valor, estacion_id=lectura.estacion_id)
 
-    return {"status": "Lectura guardada en DB"}
+    return {"status": "Lectura recibida"}
 
 
 @app.get(
@@ -101,48 +97,12 @@ def registrar_lectura(lectura: LecturaCreate, db: Session = Depends(get_db)):
     description="Muestra todas las estaciones registradas."
 )
 def obtener_estaciones(db: Session = Depends(get_db)):
-    estaciones = db.query(models.EstacionDB).all()
+    estaciones = crud.obtener_estaciones(db)
 
     if not estaciones:
         raise HTTPException(status_code=404, detail="No hay estaciones registradas")
 
     return estaciones
-
-
-@app.get(
-    "/estaciones/{id}/historial",
-    tags=["Reportes Históricos"],
-    summary="Historial de lecturas",
-    description="Devuelve lecturas, conteo y promedio de una estación.",
-    responses={404: {"description": "Estación no encontrada"}}
-)
-def obtener_historial(id: int, db: Session = Depends(get_db)):
-
-    estacion = db.query(models.EstacionDB).filter(
-        models.EstacionDB.id == id
-    ).first()
-
-    if not estacion:
-        raise HTTPException(status_code=404, detail="Estación no encontrada")
-
-    lecturas = db.query(models.LecturaDB).filter(
-        models.LecturaDB.estacion_id == id
-    ).all()
-
-    valores = [l.valor for l in lecturas]
-
-    if len(valores) > 0:
-        promedio = sum(valores) / len(valores)
-    else:
-        promedio = 0.0
-
-    return {
-        "estacion_id": id,
-        "lecturas": valores,
-        "conteo": len(valores),
-        "promedio": round(promedio, 2)
-    }
-
 
 
 @app.get(
@@ -152,24 +112,16 @@ def obtener_historial(id: int, db: Session = Depends(get_db)):
     description="Analiza la última lectura de una estación y determina si el estado es NORMAL, ALERTA o PELIGRO."
 )
 def obtener_riesgo(id: int, db: Session = Depends(get_db)):
-
-    # Validar existencia de la estación
-    estacion = db.query(models.EstacionDB).filter(
-        models.EstacionDB.id == id
-    ).first()
+    estacion = crud.obtener_estacion_por_id(db, id)
 
     if not estacion:
         raise HTTPException(status_code=404, detail="Estación no encontrada")
 
-    # Obtener lecturas
-    lecturas = db.query(models.LecturaDB).filter(
-        models.LecturaDB.estacion_id == id
-    ).all()
+    lecturas = crud.obtener_lecturas_por_estacion(db, id)
 
     if not lecturas:
         return {"id": id, "nivel": "SIN DATOS", "valor": 0}
 
-    # Evaluar última lectura
     ultima_lectura = lecturas[-1].valor
 
     if ultima_lectura > 20.0:
@@ -181,6 +133,7 @@ def obtener_riesgo(id: int, db: Session = Depends(get_db)):
 
     return {"id": id, "valor": ultima_lectura, "nivel": nivel}
 
+
 @app.get(
     "/estaciones/{id}/historial-resumen",
     tags=["Historial de Lecturas"],
@@ -188,24 +141,14 @@ def obtener_riesgo(id: int, db: Session = Depends(get_db)):
     description="Devuelve lecturas, conteo y promedio de una estación."
 )
 def obtener_historial_resumen(id: int, db: Session = Depends(get_db)):
-
-    # Validar existencia
-    estacion = db.query(models.EstacionDB).filter(
-        models.EstacionDB.id == id
-    ).first()
+    estacion = crud.obtener_estacion_por_id(db, id)
 
     if not estacion:
         raise HTTPException(status_code=404, detail="Estación no encontrada")
 
-    # Obtener lecturas
-    lecturas = db.query(models.LecturaDB).filter(
-        models.LecturaDB.estacion_id == id
-    ).all()
-
-    # Extraer valores (equivalente a list comprehension de semana 2)
+    lecturas = crud.obtener_lecturas_por_estacion(db, id)
     valores = [l.valor for l in lecturas]
 
-    # Calcular promedio (evitar división por 0)
     if len(valores) > 0:
         promedio = sum(valores) / len(valores)
     else:
@@ -218,6 +161,7 @@ def obtener_historial_resumen(id: int, db: Session = Depends(get_db)):
         "promedio": round(promedio, 2)
     }
 
+
 @app.get(
     "/reportes/criticos",
     tags=["Auditoría"],
@@ -225,15 +169,11 @@ def obtener_historial_resumen(id: int, db: Session = Depends(get_db)):
     description="Lista estaciones cuya última lectura supera un umbral."
 )
 def obtener_criticos(umbral: float = 20.0, db: Session = Depends(get_db)):
-
-    estaciones = db.query(models.EstacionDB).all()
+    estaciones = crud.obtener_estaciones(db)
     resultado = []
 
     for est in estaciones:
-        lecturas = db.query(models.LecturaDB).filter(
-            models.LecturaDB.estacion_id == est.id
-        ).all()
-
+        lecturas = crud.obtener_lecturas_por_estacion(db, est.id)
         if lecturas:
             ultima = lecturas[-1].valor
             if ultima > umbral:
@@ -248,26 +188,29 @@ def obtener_criticos(umbral: float = 20.0, db: Session = Depends(get_db)):
         "data": resultado
     }
 
-@app.get(
-    "/estaciones/stats",
-    tags=["Resumen Ejecutivo"],
-    summary="Resumen del sistema",
-    description="Muestra total de estaciones, lecturas y promedio global."
-)
+
+@app.get("/estaciones/stats", tags=["Resumen Ejecutivo"])
 def obtener_stats(db: Session = Depends(get_db)):
+    # Usamos tus funciones de crud sin modificarlas
+    estaciones = crud.obtener_estaciones(db)
+    lecturas = crud.obtener_todas_las_lecturas(db)
 
-    estaciones = db.query(models.EstacionDB).all()
-    lecturas = db.query(models.LecturaDB).all()
+    total_est = len(estaciones)
+    total_lec = len(lecturas)
 
-    valores = [l.valor for l in lecturas]
-
-    if len(valores) > 0:
-        promedio = sum(valores) / len(valores)
-    else:
-        promedio = 0.0
+    # Buscamos el máximo manualmente
+    valor_max = 0.0
+    id_max = None
+    for l in lecturas:
+        if l.valor > valor_max:
+            valor_max = l.valor
+            id_max = l.estacion_id
 
     return {
-        "total_estaciones": len(estaciones),
-        "total_lecturas": len(lecturas),
-        "promedio_global": round(promedio, 2)
+        "total_estaciones_monitoreadas": total_est,
+        "total_lecturas_procesadas": total_lec,
+        "punto_critico_maximo": {
+            "estacion_id": id_max,
+            "valor_lectura": valor_max
+        }
     }

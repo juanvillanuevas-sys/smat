@@ -1,7 +1,6 @@
 from sqlalchemy import Column, Integer, String, Float, ForeignKey
 from sqlalchemy.orm import relationship
-from app.database import Base
-
+from database import Base
 class EstacionDB(Base):
     __tablename__ = "estaciones"
     id = Column(Integer, primary_key=True, index=True)
@@ -14,4 +13,4 @@ class LecturaDB(Base):
     id = Column(Integer, primary_key=True, index=True)
     valor = Column(Float)
     estacion_id = Column(Integer, ForeignKey("estaciones.id"))
-    estacion = relationship("EstacionDB", back_populates="lecturas")    
+    estacion = relationship("EstacionDB", back_populates="lecturas")
