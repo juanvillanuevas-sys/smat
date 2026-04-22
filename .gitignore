@@ -1,5 +1,12 @@
+# Entorno virtual
 venv/
+
+# Archivos compilados de Python
 __pycache__/
 *.pyc
+
+# Base de datos
 smat.db
+
+# Cache de pytest
 .pytest_cache/
